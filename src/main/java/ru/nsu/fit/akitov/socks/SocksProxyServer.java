@@ -14,6 +14,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.*;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.Set;
 
@@ -57,6 +58,9 @@ public class SocksProxyServer implements Runnable {
         while (iterator.hasNext()) {
             SelectionKey key = iterator.next();
             iterator.remove();
+            if (!key.isValid()) {
+                continue;
+            }
             try {
                 if (key.isAcceptable()) {
                     registerChannel(key);
@@ -104,6 +108,8 @@ public class SocksProxyServer implements Runnable {
             key.interestOps(SelectionKey.OP_WRITE);
             return;
         }
+
+        log.info("reading from " + channel.getRemoteAddress());
         attachment.getDestination().interestOps(attachment.getDestination().interestOps() | SelectionKey.OP_WRITE);
         key.interestOps(key.interestOps() ^ SelectionKey.OP_READ);
         attachment.getInputBuffer().flip();
@@ -113,24 +119,20 @@ public class SocksProxyServer implements Runnable {
         key.cancel();
         key.channel().close();
         SelectionKey destKey = ((ChannelAttachment) key.attachment()).getDestination();
-        if (destKey == null) {
-            return;
+        if (destKey != null) {
+            ((ChannelAttachment) destKey.attachment()).setDestination(null);
+            if ((destKey.interestOps() & SelectionKey.OP_WRITE) == 0) {
+                ((ChannelAttachment) destKey.attachment()).getOutputBuffer().flip();
+            }
+            destKey.interestOps(SelectionKey.OP_WRITE);
         }
-        ((ChannelAttachment) destKey.attachment()).setDestination(null);
-        if (destKey.isWritable()) {
-            ((ChannelAttachment) destKey.attachment()).getOutputBuffer().flip();
-        }
-        destKey.interestOps(SelectionKey.OP_WRITE);
     }
 
     private void writeChannel(SelectionKey key) throws IOException {
         SocketChannel channel = (SocketChannel) key.channel();
         ChannelAttachment attachment = (ChannelAttachment) key.attachment();
-        if (attachment == null) {
-            throw new IllegalStateException("nowhere to write");
-        }
         if (!attachment.isAuthorized()) {
-            log.info("authorizing " + channel.getRemoteAddress());
+            log.info(channel.getRemoteAddress() + " is being authorized");
             if (!authorize(key)) {
                 log.error("couldn't authorize " + channel.getRemoteAddress());
                 closeKey(key);
@@ -146,19 +148,16 @@ public class SocksProxyServer implements Runnable {
             return;
         }
 
-        if (channel.write(attachment.getOutputBuffer()) == 0) {
+        if (channel.write(attachment.getOutputBuffer()) == -1) {
             closeKey(key);
-            return;
-        }
-
-        if (attachment.getOutputBuffer().remaining() == 0) {
+        } else if (attachment.getOutputBuffer().remaining() == 0) {
             if (attachment.getDestination() == null) {
                 closeKey(key);
-                return;
+            } else {
+                attachment.getOutputBuffer().clear();
+                attachment.getDestination().interestOps(attachment.getDestination().interestOps() | SelectionKey.OP_READ);
+                key.interestOps(key.interestOps() ^ SelectionKey.OP_WRITE);
             }
-            attachment.getOutputBuffer().clear();
-            attachment.getDestination().interestOps(attachment.getDestination().interestOps() | SelectionKey.OP_READ);
-            key.interestOps(key.interestOps() ^ SelectionKey.OP_WRITE);
         }
     }
 
@@ -174,10 +173,10 @@ public class SocksProxyServer implements Runnable {
 
         SocketChannel channel = (SocketChannel) key.channel();
         AuthMethodChoice choice = AuthMethodChoice.choose(request.suggestedMethods());
+        channel.write(AuthMethodChoice.choose(request.suggestedMethods()).toByteBuffer());
         if (choice.getChosen() == AuthMethod.NO_ACCEPTABLE_METHOD) {
             return false;
         }
-        channel.write(AuthMethodChoice.choose(request.suggestedMethods()).toByteBuffer());
         attachment.setAuthorized(true);
         attachment.getInputBuffer().clear();
         return true;
@@ -185,7 +184,6 @@ public class SocksProxyServer implements Runnable {
 
     private boolean handleConnectionRequest(SelectionKey key) throws IOException {
         ChannelAttachment attachment = (ChannelAttachment) key.attachment();
-
         ConnectionRequest request;
         try {
             request = ConnectionRequest.buildFromByteBuffer(attachment.getInputBuffer());
@@ -194,11 +192,11 @@ public class SocksProxyServer implements Runnable {
             return false;
         }
 
-        InetAddress destAddress = request.addressType() == AddressType.DOMAIN ?
+        InetAddress connectionAddress = request.addressType() == AddressType.DOMAIN ?
                 InetAddress.getByName(new String(request.rawAddress())) :
                 InetAddress.getByAddress(request.rawAddress());
 
-        SocketChannel destination = getConnectionChannel(destAddress, request.port());
+        SocketChannel destination = getConnectionChannel(connectionAddress, request.port());
         SelectionKey destKey = destination.register(key.selector(), SelectionKey.OP_CONNECT);
         key.interestOps(0);
         attachment.setDestination(destKey);
@@ -214,9 +212,9 @@ public class SocksProxyServer implements Runnable {
     private SocketChannel getConnectionChannel(InetAddress address, int port) throws IOException {
         SocketChannel destination = null;
         try {
-            log.info("connecting to " + address.getHostAddress() + ":" + port);
             destination = SocketChannel.open();
             destination.configureBlocking(false);
+            log.info("connecting to " + address.getCanonicalHostName());
             destination.connect(new InetSocketAddress(address, port));
         } catch (IOException e) {
             if (destination != null) {
@@ -230,22 +228,26 @@ public class SocksProxyServer implements Runnable {
     private void connectChannel(SelectionKey key) throws IOException {
         SocketChannel channel = (SocketChannel) key.channel();
         ChannelAttachment attachment = (ChannelAttachment) key.attachment();
+        SelectionKey clientKey = ((ChannelAttachment) key.attachment()).getDestination();
+        SocketChannel clientChannel = (SocketChannel) clientKey.channel();
         if (!channel.finishConnect()) {
-            channel.write(ConnectionResponse.builder()
+            clientChannel.write(ConnectionResponse.builder()
                     .responseCode(SocksConfiguration.STATUS_HOST_UNREACHABLE)
                     .build().toByteBuffer());
             closeKey(key);
             return;
         }
 
-        channel.write(ConnectionResponse.builder()
+        clientChannel.write(ConnectionResponse.builder()
                 .responseCode(SocksConfiguration.STATUS_GRANTED)
                 .build().toByteBuffer());
 
-        ChannelAttachment destAttachment = (ChannelAttachment) attachment.getDestination().attachment();
+        log.info("connected to " + channel.getRemoteAddress());
+
+        ChannelAttachment destAttachment = (ChannelAttachment) clientKey.attachment();
         attachment.setOutputBuffer(destAttachment.getInputBuffer());
         destAttachment.setOutputBuffer(attachment.getInputBuffer());
-        attachment.getDestination().interestOps(SelectionKey.OP_READ | SelectionKey.OP_WRITE);
+        clientKey.interestOps(SelectionKey.OP_READ | SelectionKey.OP_WRITE);
         key.interestOps(0);
     }
 
