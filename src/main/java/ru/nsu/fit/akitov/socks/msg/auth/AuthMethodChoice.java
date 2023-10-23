@@ -4,7 +4,6 @@ import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
 import ru.nsu.fit.akitov.socks.SocksConfiguration;
-import ru.nsu.fit.akitov.socks.msg.AuthMethod;
 
 import java.nio.ByteBuffer;
 import java.util.List;

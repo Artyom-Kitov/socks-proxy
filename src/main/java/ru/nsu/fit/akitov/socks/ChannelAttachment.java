@@ -14,6 +14,7 @@ import java.nio.channels.SelectionKey;
 public class ChannelAttachment {
 
     boolean authorized;
+    boolean proxying;
     ByteBuffer inputBuffer;
     ByteBuffer outputBuffer;
     SelectionKey destination;

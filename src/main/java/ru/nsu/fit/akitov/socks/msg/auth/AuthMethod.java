@@ -1,4 +1,4 @@
-package ru.nsu.fit.akitov.socks.msg;
+package ru.nsu.fit.akitov.socks.msg.auth;
 
 import lombok.AllArgsConstructor;
 import lombok.Getter;
@@ -17,7 +17,7 @@ public enum AuthMethod {
                 return method;
             }
         }
-        throw new IllegalArgumentException("authentication method not supported");
+        throw new IllegalArgumentException("authentication method is not supported");
     }
 
     private final byte representation;
