@@ -12,8 +12,10 @@ import java.nio.channels.SelectionKey;
 @Data
 @FieldDefaults(level = AccessLevel.PRIVATE)
 public class ChannelAttachment {
+
     boolean authorized;
     ByteBuffer inputBuffer;
     ByteBuffer outputBuffer;
     SelectionKey destination;
+
 }
