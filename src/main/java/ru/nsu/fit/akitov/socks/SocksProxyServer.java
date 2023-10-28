@@ -1,17 +1,16 @@
 package ru.nsu.fit.akitov.socks;
 
 import lombok.extern.log4j.Log4j2;
-import ru.nsu.fit.akitov.socks.msg.auth.AuthMethod;
 import ru.nsu.fit.akitov.socks.msg.MessageBuildException;
+import ru.nsu.fit.akitov.socks.msg.auth.AuthMethod;
 import ru.nsu.fit.akitov.socks.msg.auth.AuthMethodChoice;
 import ru.nsu.fit.akitov.socks.msg.auth.AuthRequest;
-import ru.nsu.fit.akitov.socks.msg.connection.AddressType;
 import ru.nsu.fit.akitov.socks.msg.connection.ConnectionRequest;
 import ru.nsu.fit.akitov.socks.msg.connection.ConnectionResponse;
 
 import java.io.IOException;
-import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.*;
 import java.util.Arrays;
@@ -37,7 +36,7 @@ public class SocksProxyServer implements Runnable {
             serverSocket.register(selector, SelectionKey.OP_ACCEPT);
             log.info("Started at port " + port);
 
-            while (selector.select() > 0) {
+            while (selector.select() >= 0) {
                 Set<SelectionKey> keys = selector.selectedKeys();
                 handleKeys(keys);
             }
@@ -79,7 +78,6 @@ public class SocksProxyServer implements Runnable {
                 } catch (IOException ex) {
                     log.error(ex.getMessage());
                 }
-                log.error(e.getMessage());
             }
         }
     }
@@ -93,7 +91,8 @@ public class SocksProxyServer implements Runnable {
     private void readChannel(SelectionKey key) throws IOException {
         SocketChannel channel = (SocketChannel) key.channel();
         if (key.attachment() == null) {
-            key.attach(ChannelAttachment.builder().authorized(false).proxying(false)
+            key.attach(ChannelAttachment.builder()
+                    .state(ChannelState.AUTHORIZING)
                     .inputBuffer(ByteBuffer.allocate(BUFFER_SIZE))
                     .build());
         }
@@ -104,118 +103,120 @@ public class SocksProxyServer implements Runnable {
             closeKey(key);
             return;
         }
-        if (!attachment.isAuthorized() || !attachment.isProxying()) {
+        if (attachment.getState() == ChannelState.AUTHORIZING || attachment.getState() == ChannelState.CONNECTING) {
             key.interestOps(SelectionKey.OP_WRITE);
             return;
         }
+        if (attachment.getDestination() == null) {
+            log.info(Arrays.toString(attachment.getInputBuffer().array()) + " nowhere to write :(");
+            closeKey(key);
+            return;
+        }
 
-        log.info("reading from " + channel.getRemoteAddress());
         attachment.getDestination().interestOps(attachment.getDestination().interestOps() | SelectionKey.OP_WRITE);
         key.interestOps(key.interestOps() ^ SelectionKey.OP_READ);
         attachment.getInputBuffer().flip();
+
+        log.info(channel.getRemoteAddress() + " is sending data to " + ((SocketChannel) attachment.getDestination().channel()).getRemoteAddress());
     }
 
     private void closeKey(SelectionKey key) throws IOException {
-        key.cancel();
+        log.info("closing " + ((SocketChannel) key.channel()).getRemoteAddress());
+        key.interestOps(0);
         key.channel().close();
-        SelectionKey destKey = ((ChannelAttachment) key.attachment()).getDestination();
-        if (destKey != null) {
-            ((ChannelAttachment) destKey.attachment()).setDestination(null);
-            if ((destKey.interestOps() & SelectionKey.OP_WRITE) == 0) {
-                ((ChannelAttachment) destKey.attachment()).getOutputBuffer().flip();
+        key.cancel();
+        if (key.attachment() != null) {
+            SelectionKey dest = ((ChannelAttachment) key.attachment()).getDestination();
+            if (dest != null) {
+                ((ChannelAttachment) dest.attachment()).setDestination(null);
+                if (!dest.isWritable()) {
+                    ((ChannelAttachment) dest.attachment()).getOutputBuffer().flip();
+                }
+                dest.interestOps(SelectionKey.OP_WRITE);
             }
-            destKey.interestOps(SelectionKey.OP_WRITE);
         }
     }
 
     private void writeChannel(SelectionKey key) throws IOException {
         SocketChannel channel = (SocketChannel) key.channel();
         ChannelAttachment attachment = (ChannelAttachment) key.attachment();
-        if (!attachment.isAuthorized()) {
-            log.info(channel.getRemoteAddress() + " is being authorized");
-            if (!authorize(key)) {
-                log.error("couldn't authorize " + channel.getRemoteAddress());
-                closeKey(key);
-                return;
-            }
-            key.interestOps(SelectionKey.OP_READ);
-            return;
-        }
-        if (!attachment.isProxying()) {
-            if (!handleConnectionRequest(key)) {
-                closeKey(key);
-            }
-            return;
-        }
-
-        if (channel.write(attachment.getOutputBuffer()) == -1) {
-            closeKey(key);
-        } else if (attachment.getOutputBuffer().remaining() == 0) {
-            if (attachment.getDestination() == null) {
-                closeKey(key);
-            } else {
-                attachment.getOutputBuffer().clear();
-                attachment.getDestination().interestOps(attachment.getDestination().interestOps() | SelectionKey.OP_READ);
-                key.interestOps(key.interestOps() ^ SelectionKey.OP_WRITE);
+        switch (attachment.getState()) {
+            case AUTHORIZING -> authorize(key);
+            case CONNECTING -> handleConnectionRequest(key);
+            case PROXYING -> {
+                int bytesWritten = channel.write(attachment.getOutputBuffer());
+                if (bytesWritten == -1) {
+                    closeKey(key);
+                } else if (attachment.getOutputBuffer().remaining() == 0) {
+                    if (attachment.getDestination() == null) {
+                        closeKey(key);
+                    } else {
+                        attachment.getOutputBuffer().clear();
+                        attachment.getDestination().interestOps(attachment.getDestination().interestOps() | SelectionKey.OP_READ);
+                        key.interestOps(key.interestOps() ^ SelectionKey.OP_WRITE);
+                    }
+                }
             }
         }
     }
 
-    private boolean authorize(SelectionKey key) throws IOException {
+    private void authorize(SelectionKey key) throws IOException {
+        SocketChannel channel = (SocketChannel) key.channel();
         ChannelAttachment attachment = (ChannelAttachment) key.attachment();
+        log.info(channel.getRemoteAddress() + " is being authorized");
         AuthRequest request;
         try {
             request = AuthRequest.buildFromByteBuffer(attachment.getInputBuffer());
         } catch (MessageBuildException e) {
-            log.error(e.getMessage());
-            return false;
+            log.error("auth request error: " + e.getMessage());
+            closeKey(key);
+            return;
         }
-
-        SocketChannel channel = (SocketChannel) key.channel();
-        AuthMethodChoice choice = AuthMethodChoice.choose(request.suggestedMethods());
-        channel.write(AuthMethodChoice.choose(request.suggestedMethods()).toByteBuffer());
-        if (choice.getChosen() == AuthMethod.NO_ACCEPTABLE_METHOD) {
-            return false;
+        AuthMethodChoice methodChoice = AuthMethodChoice.choose(request.suggestedMethods());
+        channel.write(methodChoice.toByteBuffer());
+        if (methodChoice.getChosen() == AuthMethod.NO_ACCEPTABLE_METHOD) {
+            log.error("couldn't authorize " + channel.getRemoteAddress());
+            closeKey(key);
+            return;
         }
-        attachment.setAuthorized(true);
+        log.info(channel.getRemoteAddress() + " successfully authorized");
+        key.interestOps(SelectionKey.OP_READ);
+        attachment.setState(ChannelState.CONNECTING);
         attachment.getInputBuffer().clear();
-        return true;
     }
 
-    private boolean handleConnectionRequest(SelectionKey key) throws IOException {
+    private void handleConnectionRequest(SelectionKey key) throws IOException {
         ChannelAttachment attachment = (ChannelAttachment) key.attachment();
         ConnectionRequest request;
         try {
             request = ConnectionRequest.buildFromByteBuffer(attachment.getInputBuffer());
         } catch (MessageBuildException e) {
-            log.error(e.getMessage());
-            return false;
+            log.error("connection request error: " + e.getMessage());
+            closeKey(key);
+            return;
         }
 
-        InetAddress connectionAddress = request.addressType() == AddressType.DOMAIN ?
-                InetAddress.getByName(new String(request.rawAddress())) :
-                InetAddress.getByAddress(request.rawAddress());
-
-        SocketChannel destination = getConnectionChannel(connectionAddress, request.port());
+        InetSocketAddress connectionAddress = request.getSocketAddress();
+        SocketChannel destination = createConnectionChannel(connectionAddress, ((SocketChannel) key.channel()).getRemoteAddress());
         SelectionKey destKey = destination.register(key.selector(), SelectionKey.OP_CONNECT);
         key.interestOps(0);
         attachment.setDestination(destKey);
-        destKey.attach(ChannelAttachment.builder().authorized(true).proxying(true).destination(key)
-                .inputBuffer(ByteBuffer.allocate(BUFFER_SIZE))
+        destKey.attach(ChannelAttachment.builder()
+                .state(ChannelState.PROXYING)
+                .destination(key)
                 .build());
-
-        attachment.setProxying(true);
+        ((ChannelAttachment) destKey.attachment()).setRequest(request);
+        attachment.setState(ChannelState.PROXYING);
         attachment.getInputBuffer().clear();
-        return true;
     }
 
-    private SocketChannel getConnectionChannel(InetAddress address, int port) throws IOException {
+    private SocketChannel createConnectionChannel(InetSocketAddress address, SocketAddress client) throws IOException {
         SocketChannel destination = null;
         try {
             destination = SocketChannel.open();
             destination.configureBlocking(false);
-            log.info("connecting to " + address.getCanonicalHostName());
-            destination.connect(new InetSocketAddress(address, port));
+            log.info(client + " connecting to " + address.getHostName());
+            destination.connect(address);
         } catch (IOException e) {
             if (destination != null) {
                 destination.close();
@@ -226,28 +227,32 @@ public class SocksProxyServer implements Runnable {
     }
 
     private void connectChannel(SelectionKey key) throws IOException {
-        SocketChannel channel = (SocketChannel) key.channel();
-        ChannelAttachment attachment = (ChannelAttachment) key.attachment();
-        SelectionKey clientKey = ((ChannelAttachment) key.attachment()).getDestination();
-        SocketChannel clientChannel = (SocketChannel) clientKey.channel();
-        if (!channel.finishConnect()) {
-            clientChannel.write(ConnectionResponse.builder()
-                    .responseCode(SocksConfiguration.STATUS_HOST_UNREACHABLE)
-                    .build().toByteBuffer());
+        SocketChannel destChannel = (SocketChannel) key.channel();
+        ChannelAttachment destAttachment = (ChannelAttachment) key.attachment();
+        SocketChannel clientChannel = (SocketChannel) destAttachment.getDestination().channel();
+        ChannelAttachment clientAttachment = (ChannelAttachment) destAttachment.getDestination().attachment();
+
+        InetSocketAddress address = destAttachment.getRequest().getSocketAddress();
+        if (!destChannel.finishConnect()) {
+            log.error("couldn't connect to " + address);
             closeKey(key);
             return;
         }
 
-        clientChannel.write(ConnectionResponse.builder()
-                .responseCode(SocksConfiguration.STATUS_GRANTED)
-                .build().toByteBuffer());
+        log.info(clientChannel.getRemoteAddress() + " connected to " + address);
+        destAttachment.setInputBuffer(ByteBuffer.allocate(BUFFER_SIZE));
+        destAttachment.setOutputBuffer(clientAttachment.getInputBuffer());
+        clientAttachment.setOutputBuffer(destAttachment.getInputBuffer());
 
-        log.info("connected to " + channel.getRemoteAddress());
+        ConnectionResponse response = ConnectionResponse.builder()
+                        .request(destAttachment.getRequest()).responseCode(SocksConfiguration.STATUS_GRANTED)
+                        .build();
 
-        ChannelAttachment destAttachment = (ChannelAttachment) clientKey.attachment();
-        attachment.setOutputBuffer(destAttachment.getInputBuffer());
-        destAttachment.setOutputBuffer(attachment.getInputBuffer());
-        clientKey.interestOps(SelectionKey.OP_READ | SelectionKey.OP_WRITE);
+        destAttachment.getInputBuffer().put(response.toByteBuffer().array()).flip();
+
+        clientAttachment.setState(ChannelState.PROXYING);
+        destAttachment.setState(ChannelState.PROXYING);
+        destAttachment.getDestination().interestOps(SelectionKey.OP_WRITE | SelectionKey.OP_READ);
         key.interestOps(0);
     }
 

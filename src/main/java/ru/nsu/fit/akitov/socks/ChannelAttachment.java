@@ -4,6 +4,7 @@ import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Data;
 import lombok.experimental.FieldDefaults;
+import ru.nsu.fit.akitov.socks.msg.connection.ConnectionRequest;
 
 import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
@@ -12,11 +13,9 @@ import java.nio.channels.SelectionKey;
 @Data
 @FieldDefaults(level = AccessLevel.PRIVATE)
 public class ChannelAttachment {
-
-    boolean authorized;
-    boolean proxying;
+    ChannelState state;
     ByteBuffer inputBuffer;
     ByteBuffer outputBuffer;
     SelectionKey destination;
-
+    ConnectionRequest request;
 }

@@ -1,14 +1,13 @@
 package ru.nsu.fit.akitov.socks.msg.connection;
 
-import lombok.AccessLevel;
 import lombok.Builder;
-import lombok.Getter;
-import lombok.experimental.FieldDefaults;
 import ru.nsu.fit.akitov.socks.SocksConfiguration;
 import ru.nsu.fit.akitov.socks.msg.MessageBuildException;
 
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.Arrays;
 
 @Builder
@@ -60,13 +59,23 @@ public record ConnectionRequest(ProxyCommand command, AddressType addressType, b
                 buffer.get(result);
             }
             case DOMAIN -> {
-                int length = buffer.get();
-                result = new byte[length];
+                int length = buffer.get(buffer.position());
+                result = new byte[length + 1];
                 buffer.get(result);
             }
             default -> throw new IllegalStateException("unexpected address type: " + type);
         }
         return result;
+    }
+
+    public InetSocketAddress getSocketAddress() throws UnknownHostException {
+        InetAddress address;
+        switch (addressType()) {
+            case IPv4, IPv6 -> address = InetAddress.getByAddress(rawAddress);
+            case DOMAIN -> address = InetAddress.getByName(new String(Arrays.copyOfRange(rawAddress, 1, rawAddress.length)));
+            default -> throw new IllegalStateException();
+        }
+        return new InetSocketAddress(address, port);
     }
 
 }
