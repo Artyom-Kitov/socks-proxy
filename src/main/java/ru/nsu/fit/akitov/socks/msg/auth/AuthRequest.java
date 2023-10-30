@@ -1,9 +1,8 @@
 package ru.nsu.fit.akitov.socks.msg.auth;
 
 import lombok.Builder;
-import lombok.Getter;
 import ru.nsu.fit.akitov.socks.SocksConfiguration;
-import ru.nsu.fit.akitov.socks.msg.MessageBuildException;
+import ru.nsu.fit.akitov.socks.msg.exception.SocksException;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -12,10 +11,10 @@ import java.util.List;
 @Builder
 public record AuthRequest(List<AuthMethod> suggestedMethods) {
 
-    public static AuthRequest buildFromByteBuffer(ByteBuffer buffer) throws MessageBuildException {
+    public static AuthRequest buildFromByteBuffer(ByteBuffer buffer) throws SocksException {
         int version = buffer.get(0);
         if (version != SocksConfiguration.VERSION) {
-            throw new MessageBuildException("SOCKS" + version + " is not supported");
+            throw new SocksException("SOCKS" + version + " is not supported");
         }
         int amountSuggestedMethods = buffer.get(1);
         List<AuthMethod> suggestedMethods = new ArrayList<>();

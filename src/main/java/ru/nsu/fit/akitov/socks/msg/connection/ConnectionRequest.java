@@ -2,10 +2,11 @@ package ru.nsu.fit.akitov.socks.msg.connection;
 
 import lombok.Builder;
 import ru.nsu.fit.akitov.socks.SocksConfiguration;
-import ru.nsu.fit.akitov.socks.msg.MessageBuildException;
+import ru.nsu.fit.akitov.socks.msg.exception.AddressNotSupportedException;
+import ru.nsu.fit.akitov.socks.msg.exception.CommandNotSupportedException;
+import ru.nsu.fit.akitov.socks.msg.exception.SocksException;
 
 import java.net.InetAddress;
-import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
@@ -13,29 +14,29 @@ import java.util.Arrays;
 @Builder
 public record ConnectionRequest(ProxyCommand command, AddressType addressType, byte[] rawAddress, int port) {
 
-    public static ConnectionRequest buildFromByteBuffer(ByteBuffer buffer) throws MessageBuildException {
+    public static ConnectionRequest buildFromByteBuffer(ByteBuffer buffer) throws SocksException {
         buffer.position(0);
         int version = buffer.get();
         if (version != SocksConfiguration.VERSION) {
-            throw new MessageBuildException("SOCKS" + version + " is not supported");
+            throw new SocksException("SOCKS" + version + " is not supported");
         }
 
         ProxyCommand command;
         try {
             command = ProxyCommand.of(buffer.get());
         } catch (IllegalArgumentException e) {
-            throw new MessageBuildException(e);
+            throw new CommandNotSupportedException(e.getMessage());
         }
 
         if (buffer.get() != 0) {
-            throw new MessageBuildException("reserved byte is not zero");
+            throw new SocksException("reserved byte is not zero");
         }
 
         AddressType type;
         try {
             type = AddressType.of(buffer.get());
         } catch (IllegalArgumentException e) {
-            throw new MessageBuildException(e);
+            throw new AddressNotSupportedException(e.getMessage());
         }
         byte[] rawAddress = getRawAddress(buffer, type);
         int port = ((0xFF & buffer.get()) << 8) | (0xFF & buffer.get());
@@ -68,14 +69,16 @@ public record ConnectionRequest(ProxyCommand command, AddressType addressType, b
         return result;
     }
 
-    public InetSocketAddress getSocketAddress() throws UnknownHostException {
-        InetAddress address;
-        switch (addressType()) {
-            case IPv4, IPv6 -> address = InetAddress.getByAddress(rawAddress);
-            case DOMAIN -> address = InetAddress.getByName(new String(Arrays.copyOfRange(rawAddress, 1, rawAddress.length)));
-            default -> throw new IllegalStateException();
+    public String getHostName() throws UnknownHostException {
+        switch (addressType) {
+            case IPv4, IPv6 -> {
+                return InetAddress.getByAddress(rawAddress).getHostAddress();
+            }
+            case DOMAIN -> {
+                return new String(Arrays.copyOfRange(rawAddress, 1, rawAddress.length));
+            }
+            default -> throw new IllegalStateException("unknown address type");
         }
-        return new InetSocketAddress(address, port);
     }
 
 }

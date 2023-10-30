@@ -7,7 +7,12 @@ public class Main {
             System.out.println("Error: port not specified");
             return;
         }
-        new SocksProxyServer(Integer.parseInt(args[0])).run();
+        try {
+            int port = Integer.parseInt(args[0]);
+            new SocksProxyServer(port).run();
+        } catch (NumberFormatException e) {
+            System.out.println("Error: invalid port");
+        }
     }
 
 }

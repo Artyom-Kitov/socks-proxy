@@ -23,6 +23,7 @@ dependencies {
     implementation 'org.apache.logging.log4j:log4j-core:2.20.0'
 
     /* DNS */
+    implementation 'dnsjava:dnsjava:3.5.2'
 }
 
 test {

@@ -10,6 +10,9 @@ import java.util.Arrays;
 public record ConnectionResponse(byte responseCode, ConnectionRequest request) {
 
     public ByteBuffer toByteBuffer() {
+        if (request == null) {
+            return ByteBuffer.wrap(new byte[]{SocksConfiguration.VERSION, responseCode, 0});
+        }
         ByteBuffer result = ByteBuffer.allocate(6 + request.rawAddress().length);
         result.put(SocksConfiguration.VERSION);
         result.put(responseCode);

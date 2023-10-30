@@ -8,9 +8,9 @@ import ru.nsu.fit.akitov.socks.SocksConfiguration;
 @AllArgsConstructor
 public enum AddressType {
 
-    IPv4(SocksConfiguration.IPv4_ADDRESS),
-    IPv6(SocksConfiguration.IPv6_ADDRESS),
-    DOMAIN(SocksConfiguration.DOMAIN_NAME);
+    IPv4(SocksConfiguration.ADDRESS_IPv4),
+    IPv6(SocksConfiguration.ADDRESS_IPv6),
+    DOMAIN(SocksConfiguration.ADDRESS_DOMAIN);
 
     public static AddressType of(byte representation) {
         for (AddressType type : AddressType.values()) {

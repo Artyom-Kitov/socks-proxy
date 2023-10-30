@@ -1,39 +1,53 @@
 package ru.nsu.fit.akitov.socks;
 
+import lombok.AccessLevel;
+import lombok.RequiredArgsConstructor;
+import lombok.experimental.FieldDefaults;
 import lombok.extern.log4j.Log4j2;
-import ru.nsu.fit.akitov.socks.msg.MessageBuildException;
+import org.xbill.DNS.*;
+import org.xbill.DNS.Record;
+import ru.nsu.fit.akitov.socks.dns.DomainNameStorage;
+import ru.nsu.fit.akitov.socks.dns.ResolveQueues;
+import ru.nsu.fit.akitov.socks.msg.exception.AddressNotSupportedException;
+import ru.nsu.fit.akitov.socks.msg.exception.CommandNotSupportedException;
+import ru.nsu.fit.akitov.socks.msg.exception.SocksException;
 import ru.nsu.fit.akitov.socks.msg.auth.AuthMethod;
 import ru.nsu.fit.akitov.socks.msg.auth.AuthMethodChoice;
 import ru.nsu.fit.akitov.socks.msg.auth.AuthRequest;
+import ru.nsu.fit.akitov.socks.msg.connection.AddressType;
 import ru.nsu.fit.akitov.socks.msg.connection.ConnectionRequest;
 import ru.nsu.fit.akitov.socks.msg.connection.ConnectionResponse;
 
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.*;
-import java.util.Arrays;
-import java.util.Iterator;
-import java.util.Set;
+import java.time.Duration;
+import java.util.*;
 
 @Log4j2
+@RequiredArgsConstructor
+@FieldDefaults(level = AccessLevel.PRIVATE)
 public class SocksProxyServer implements Runnable {
 
-    private static final int BUFFER_SIZE = 4096;
+    static final int BUFFER_SIZE = 4096;
+    static final InetSocketAddress DNS_SERVER_ADDRESS = ResolverConfig.getCurrentConfig().server();
 
-    private final int port;
-    private Selector selector;
-
-    public SocksProxyServer(int port) {
-        this.port = port;
-    }
+    final int port;
+    Selector selector;
+    DatagramChannel dnsResolver;
+    final ResolveQueues resolveQueues = new ResolveQueues();
+    final DomainNameStorage domainNameStorage = new DomainNameStorage();
 
     @Override
     public void run() {
         try (ServerSocketChannel serverSocket = createServerSocket()) {
+            dnsResolver = createResolver();
             selector = Selector.open();
             serverSocket.register(selector, SelectionKey.OP_ACCEPT);
+            dnsResolver.register(selector, SelectionKey.OP_READ);
             log.info("Started at port " + port);
 
             while (selector.select() >= 0) {
@@ -50,6 +64,13 @@ public class SocksProxyServer implements Runnable {
         serverSocket.bind(new InetSocketAddress(port));
         serverSocket.configureBlocking(false);
         return serverSocket;
+    }
+
+    private DatagramChannel createResolver() throws IOException {
+        DatagramChannel resolver = DatagramChannel.open();
+        resolver.socket().bind(new InetSocketAddress(0));
+        resolver.configureBlocking(false);
+        return resolver;
     }
 
     private void handleKeys(Set<SelectionKey> keys) {
@@ -89,6 +110,10 @@ public class SocksProxyServer implements Runnable {
     }
 
     private void readChannel(SelectionKey key) throws IOException {
+        if (key.channel().equals(dnsResolver)) {
+            handleDnsResponse();
+            return;
+        }
         SocketChannel channel = (SocketChannel) key.channel();
         if (key.attachment() == null) {
             key.attach(ChannelAttachment.builder()
@@ -108,7 +133,6 @@ public class SocksProxyServer implements Runnable {
             return;
         }
         if (attachment.getDestination() == null) {
-            log.info(Arrays.toString(attachment.getInputBuffer().array()) + " nowhere to write :(");
             closeKey(key);
             return;
         }
@@ -118,6 +142,32 @@ public class SocksProxyServer implements Runnable {
         attachment.getInputBuffer().flip();
 
         log.info(channel.getRemoteAddress() + " is sending data to " + ((SocketChannel) attachment.getDestination().channel()).getRemoteAddress());
+    }
+
+    private void handleDnsResponse() throws IOException {
+        ByteBuffer buffer = ByteBuffer.allocate(512);
+        dnsResolver.receive(buffer);
+        buffer.flip();
+        Message response = new Message(buffer);
+        if (response.getHeader().getRcode() != Rcode.NOERROR) {
+            log.error("some domain name not resolved");
+            return;
+        }
+        List<Record> records = response.getSection(Section.ANSWER);
+        ARecord resolved = (ARecord) records.get(records.size() - 1);
+        String domainName = records.get(0).getName().toString();
+        domainName = domainName.substring(0, domainName.length() - 1);
+        InetAddress resolvedAddress = resolved.getAddress();
+        domainNameStorage.putDomainNameAddress(domainName, resolvedAddress);
+        Set<SelectionKey> waiting = resolveQueues.remove(domainName);
+        if (waiting == null) {
+            return;
+        }
+        for (SelectionKey key : waiting) {
+            ChannelAttachment attachment = (ChannelAttachment) key.attachment();
+            attachment.setDestinationAddress(resolvedAddress);
+            startConnection(key);
+        }
     }
 
     private void closeKey(SelectionKey key) throws IOException {
@@ -167,7 +217,7 @@ public class SocksProxyServer implements Runnable {
         AuthRequest request;
         try {
             request = AuthRequest.buildFromByteBuffer(attachment.getInputBuffer());
-        } catch (MessageBuildException e) {
+        } catch (SocksException e) {
             log.error("auth request error: " + e.getMessage());
             closeKey(key);
             return;
@@ -187,17 +237,52 @@ public class SocksProxyServer implements Runnable {
 
     private void handleConnectionRequest(SelectionKey key) throws IOException {
         ChannelAttachment attachment = (ChannelAttachment) key.attachment();
+        SocketChannel channel = (SocketChannel) key.channel();
         ConnectionRequest request;
         try {
             request = ConnectionRequest.buildFromByteBuffer(attachment.getInputBuffer());
-        } catch (MessageBuildException e) {
-            log.error("connection request error: " + e.getMessage());
+        } catch (CommandNotSupportedException e) {
+            log.error(e.getMessage());
+            channel.write(ConnectionResponse.builder().responseCode(SocksConfiguration.STATUS_COMMAND_NOT_SUPPORTED)
+                    .build().toByteBuffer());
+            closeKey(key);
+            return;
+        } catch (AddressNotSupportedException e) {
+            log.error(e.getMessage());
+            channel.write(ConnectionResponse.builder().responseCode(SocksConfiguration.STATUS_ADDRESS_NOT_SUPPORTED)
+                    .build().toByteBuffer());
+            closeKey(key);
+            return;
+        } catch (SocksException e) {
+            log.error(e.getMessage());
+            channel.write(ConnectionResponse.builder().responseCode(SocksConfiguration.STATUS_GENERAL_FAILURE)
+                    .build().toByteBuffer());
             closeKey(key);
             return;
         }
+        attachment.setRequest(request);
+        attachment.getInputBuffer().clear();
+        if (request.addressType() != AddressType.DOMAIN) {
+            attachment.setDestinationAddress(InetAddress.getByName(request.getHostName()));
+            startConnection(key);
+        } else {
+            Optional<InetAddress> address = domainNameStorage.getDomainNameAddress(request.getHostName());
+            if (address.isEmpty()) {
+                startResolving(key, request.getHostName());
+            } else {
+                attachment.setDestinationAddress(address.get());
+                startConnection(key);
+            }
+        }
+    }
 
-        InetSocketAddress connectionAddress = request.getSocketAddress();
-        SocketChannel destination = createConnectionChannel(connectionAddress, ((SocketChannel) key.channel()).getRemoteAddress());
+    private void startConnection(SelectionKey key) throws IOException {
+        ChannelAttachment attachment = (ChannelAttachment) key.attachment();
+        InetSocketAddress connectionAddress = new InetSocketAddress(attachment.getDestinationAddress(),
+                attachment.getRequest().port());
+        SocketChannel destination = createConnectionChannel(connectionAddress,
+                ((SocketChannel) key.channel()).getRemoteAddress());
+
         SelectionKey destKey = destination.register(key.selector(), SelectionKey.OP_CONNECT);
         key.interestOps(0);
         attachment.setDestination(destKey);
@@ -205,17 +290,29 @@ public class SocksProxyServer implements Runnable {
                 .state(ChannelState.PROXYING)
                 .destination(key)
                 .build());
-        ((ChannelAttachment) destKey.attachment()).setRequest(request);
+        ((ChannelAttachment) destKey.attachment()).setRequest(attachment.getRequest());
         attachment.setState(ChannelState.PROXYING);
-        attachment.getInputBuffer().clear();
     }
 
-    private SocketChannel createConnectionChannel(InetSocketAddress address, SocketAddress client) throws IOException {
+    private void startResolving(SelectionKey key, String domainName) throws IOException {
+        log.info("resolving " + domainName);
+        key.interestOps(0);
+        InetSocketAddress dnsServer = ResolverConfig.getCurrentConfig().servers().get(0);
+        Resolver resolver = new SimpleResolver(dnsServer);
+        resolver.setTCP(false);
+
+        Message query = Message.newQuery(Record.newRecord(Name.fromString(domainName + "."), Type.A, DClass.IN));
+        dnsResolver.send(ByteBuffer.wrap(query.toWire()), DNS_SERVER_ADDRESS);
+        resolveQueues.put(domainName, key);
+    }
+
+    private SocketChannel createConnectionChannel(InetSocketAddress address,
+                                                  SocketAddress clientAddress) throws IOException {
         SocketChannel destination = null;
         try {
             destination = SocketChannel.open();
             destination.configureBlocking(false);
-            log.info(client + " connecting to " + address.getHostName());
+            log.info(clientAddress + " connecting to " + address.getHostName());
             destination.connect(address);
         } catch (IOException e) {
             if (destination != null) {
@@ -232,9 +329,13 @@ public class SocksProxyServer implements Runnable {
         SocketChannel clientChannel = (SocketChannel) destAttachment.getDestination().channel();
         ChannelAttachment clientAttachment = (ChannelAttachment) destAttachment.getDestination().attachment();
 
-        InetSocketAddress address = destAttachment.getRequest().getSocketAddress();
+        String address = destAttachment.getRequest().getHostName();
         if (!destChannel.finishConnect()) {
             log.error("couldn't connect to " + address);
+            destChannel.write(ConnectionResponse.builder()
+                    .responseCode(SocksConfiguration.STATUS_CONNECTION_REFUSED)
+                    .request(destAttachment.getRequest())
+                    .build().toByteBuffer());
             closeKey(key);
             return;
         }

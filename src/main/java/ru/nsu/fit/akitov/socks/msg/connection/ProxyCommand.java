@@ -8,7 +8,7 @@ import ru.nsu.fit.akitov.socks.SocksConfiguration;
 @AllArgsConstructor
 public enum ProxyCommand {
 
-    TCP_CONNECT(SocksConfiguration.TCP_CONNECT);
+    TCP_CONNECT(SocksConfiguration.CMD_TCP_CONNECT);
 
     public static ProxyCommand of(byte representation) {
         for (ProxyCommand command : ProxyCommand.values()) {

@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.experimental.FieldDefaults;
 import ru.nsu.fit.akitov.socks.msg.connection.ConnectionRequest;
 
+import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 
@@ -18,4 +19,5 @@ public class ChannelAttachment {
     ByteBuffer outputBuffer;
     SelectionKey destination;
     ConnectionRequest request;
+    InetAddress destinationAddress;
 }
