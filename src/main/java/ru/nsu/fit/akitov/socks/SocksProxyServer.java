@@ -1,8 +1,6 @@
 package ru.nsu.fit.akitov.socks;
 
-import lombok.AccessLevel;
 import lombok.RequiredArgsConstructor;
-import lombok.experimental.FieldDefaults;
 import lombok.extern.log4j.Log4j2;
 import org.xbill.DNS.*;
 import org.xbill.DNS.Record;
@@ -24,22 +22,20 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.*;
-import java.time.Duration;
 import java.util.*;
 
 @Log4j2
 @RequiredArgsConstructor
-@FieldDefaults(level = AccessLevel.PRIVATE)
 public class SocksProxyServer implements Runnable {
 
-    static final int BUFFER_SIZE = 4096;
-    static final InetSocketAddress DNS_SERVER_ADDRESS = ResolverConfig.getCurrentConfig().server();
+    private static final int BUFFER_SIZE = 4096;
+    private static final InetSocketAddress DNS_SERVER_ADDRESS = ResolverConfig.getCurrentConfig().server();
 
-    final int port;
-    Selector selector;
-    DatagramChannel dnsResolver;
-    final ResolveQueues resolveQueues = new ResolveQueues();
-    final DomainNameStorage domainNameStorage = new DomainNameStorage();
+    private final int port;
+    private Selector selector;
+    private DatagramChannel dnsResolver;
+    private final ResolveQueues resolveQueues = new ResolveQueues();
+    private final DomainNameStorage domainNameStorage = new DomainNameStorage();
 
     @Override
     public void run() {

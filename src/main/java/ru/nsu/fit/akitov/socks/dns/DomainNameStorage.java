@@ -11,11 +11,10 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
-@FieldDefaults(level = AccessLevel.PRIVATE)
 @NoArgsConstructor
 public class DomainNameStorage {
 
-    static final Duration RECORD_TTL = Duration.ofHours(1);
+    private static final Duration RECORD_TTL = Duration.ofHours(1);
 
     public final Map<String, DomainNameEntry> hosts = new HashMap<>();
 

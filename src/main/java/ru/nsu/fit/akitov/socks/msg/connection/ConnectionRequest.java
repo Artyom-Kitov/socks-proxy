@@ -12,7 +12,7 @@ import java.nio.ByteBuffer;
 import java.util.Arrays;
 
 @Builder
-public record ConnectionRequest(ProxyCommand command, AddressType addressType, byte[] rawAddress, int port) {
+public record ConnectionRequest(SocksCommand command, AddressType addressType, byte[] rawAddress, int port) {
 
     public static ConnectionRequest buildFromByteBuffer(ByteBuffer buffer) throws SocksException {
         buffer.position(0);
@@ -21,9 +21,9 @@ public record ConnectionRequest(ProxyCommand command, AddressType addressType, b
             throw new SocksException("SOCKS" + version + " is not supported");
         }
 
-        ProxyCommand command;
+        SocksCommand command;
         try {
-            command = ProxyCommand.of(buffer.get());
+            command = SocksCommand.of(buffer.get());
         } catch (IllegalArgumentException e) {
             throw new CommandNotSupportedException(e.getMessage());
         }
@@ -64,7 +64,7 @@ public record ConnectionRequest(ProxyCommand command, AddressType addressType, b
                 result = new byte[length + 1];
                 buffer.get(result);
             }
-            default -> throw new IllegalStateException("unexpected address type: " + type);
+            default -> throw new IllegalStateException("unknown address type");
         }
         return result;
     }

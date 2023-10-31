@@ -4,7 +4,6 @@ import lombok.Builder;
 import ru.nsu.fit.akitov.socks.SocksConfiguration;
 
 import java.nio.ByteBuffer;
-import java.util.Arrays;
 
 @Builder
 public record ConnectionResponse(byte responseCode, ConnectionRequest request) {
