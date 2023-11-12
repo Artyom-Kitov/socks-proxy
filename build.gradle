@@ -9,7 +9,7 @@ java {
 }
 
 group = 'ru.nsu.fit.akitov.socks'
-version = '1.0-alpha'
+version = '1.0-beta'
 
 repositories {
     mavenCentral()

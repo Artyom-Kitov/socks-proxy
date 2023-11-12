@@ -24,7 +24,7 @@ cd socks-proxy
 3. Run the proxy server by providing the port number as a command line argument:
 
 ```bash
-java -jar build/libs/socks-proxy-1.0-alpha.jar <port>
+java -jar build/libs/socks-proxy-1.0-beta.jar <port>
 ```
 
 Replace `<port>` with the desired port number on which you want the SOCKS5 proxy to listen.

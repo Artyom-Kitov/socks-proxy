@@ -90,6 +90,7 @@ public class SocksProxyServer implements Runnable {
                     throw new IllegalStateException("unknown key state");
                 }
             } catch (IOException e) {
+                log.error(e.getMessage());
                 try {
                     closeKey(key);
                 } catch (IOException ex) {
@@ -150,6 +151,10 @@ public class SocksProxyServer implements Runnable {
             return;
         }
         List<Record> records = response.getSection(Section.ANSWER);
+        if (records.isEmpty()) {
+            log.error("received empty dns message");
+            return;
+        }
         ARecord resolved = (ARecord) records.get(records.size() - 1);
         String domainName = records.get(0).getName().toString();
         domainName = domainName.substring(0, domainName.length() - 1);
@@ -168,7 +173,6 @@ public class SocksProxyServer implements Runnable {
 
     private void closeKey(SelectionKey key) throws IOException {
         log.info("closing " + ((SocketChannel) key.channel()).getRemoteAddress());
-        key.interestOps(0);
         key.channel().close();
         key.cancel();
         if (key.attachment() != null) {
@@ -293,9 +297,6 @@ public class SocksProxyServer implements Runnable {
     private void startResolving(SelectionKey key, String domainName) throws IOException {
         log.info("resolving " + domainName);
         key.interestOps(0);
-        InetSocketAddress dnsServer = ResolverConfig.getCurrentConfig().servers().get(0);
-        Resolver resolver = new SimpleResolver(dnsServer);
-        resolver.setTCP(false);
 
         Message query = Message.newQuery(Record.newRecord(Name.fromString(domainName + "."), Type.A, DClass.IN));
         dnsResolver.send(ByteBuffer.wrap(query.toWire()), DNS_SERVER_ADDRESS);
@@ -328,7 +329,7 @@ public class SocksProxyServer implements Runnable {
         String address = destAttachment.getRequest().getHostName();
         if (!destChannel.finishConnect()) {
             log.error("couldn't connect to " + address);
-            destChannel.write(ConnectionResponse.builder()
+            clientChannel.write(ConnectionResponse.builder()
                     .responseCode(SocksConfiguration.STATUS_CONNECTION_REFUSED)
                     .request(destAttachment.getRequest())
                     .build().toByteBuffer());
